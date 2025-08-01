@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/notioncodes/datapipeline/engine"
 )
 
 // ImportOperation handles data import from sources to destinations
 type ImportOperation struct {
-	engine *engine.ProcessingEngine
+	engine *ProcessingEngine
 	config ImportConfig
 }
 
@@ -83,7 +81,7 @@ func DefaultImportConfig() ImportConfig {
 }
 
 // NewImportOperation creates a new import operation
-func NewImportOperation(engine *engine.ProcessingEngine, config ImportConfig) *ImportOperation {
+func NewImportOperation(engine *ProcessingEngine, config ImportConfig) *ImportOperation {
 	return &ImportOperation{
 		engine: engine,
 		config: config,
@@ -93,19 +91,19 @@ func NewImportOperation(engine *engine.ProcessingEngine, config ImportConfig) *I
 // ImportRequest defines what and how to import
 type ImportRequest struct {
 	// Source configuration
-	Source engine.PluginSource `json:"source"`
+	Source PluginSource `json:"source"`
 
 	// Destination configuration
-	Destination engine.PluginDestination `json:"destination"`
+	Destination PluginDestination `json:"destination"`
 
 	// What to import
 	Scope ImportScope `json:"scope"`
 
 	// Transformation pipeline
-	Transforms []engine.TransformerConfig `json:"transforms,omitempty"`
+	Transforms []TransformerConfig `json:"transforms,omitempty"`
 
 	// Validation rules
-	Validation engine.ValidationConfig `json:"validation,omitempty"`
+	Validation ValidationConfig `json:"validation,omitempty"`
 
 	// Import-specific options
 	Options ImportOptions `json:"options"`
@@ -114,16 +112,16 @@ type ImportRequest struct {
 // ImportScope defines what data to import
 type ImportScope struct {
 	// Object types to include
-	ObjectTypes []engine.ObjectType `json:"object_types,omitempty"`
+	ObjectTypes []ObjectType `json:"object_types,omitempty"`
 
 	// Specific object IDs to import
 	ObjectIDs []string `json:"object_ids,omitempty"`
 
 	// Filters to apply during import
-	Filters []engine.Filter `json:"filters,omitempty"`
+	Filters []Filter `json:"filters,omitempty"`
 
 	// Import order preferences
-	ImportOrder []engine.ObjectType `json:"import_order,omitempty"` // Preferred import order
+	ImportOrder []ObjectType `json:"import_order,omitempty"` // Preferred import order
 
 	// Dependency handling
 	ResolveDependencies bool `json:"resolve_dependencies"`
@@ -200,11 +198,11 @@ type ImportResult struct {
 // ImportStats contains detailed statistics about the import operation
 type ImportStats struct {
 	// Item counts by type
-	ItemsProcessed map[engine.ObjectType]int64 `json:"items_processed"`
-	ItemsCreated   map[engine.ObjectType]int64 `json:"items_created"`
-	ItemsUpdated   map[engine.ObjectType]int64 `json:"items_updated"`
-	ItemsFailed    map[engine.ObjectType]int64 `json:"items_failed"`
-	ItemsSkipped   map[engine.ObjectType]int64 `json:"items_skipped"`
+	ItemsProcessed map[ObjectType]int64 `json:"items_processed"`
+	ItemsCreated   map[ObjectType]int64 `json:"items_created"`
+	ItemsUpdated   map[ObjectType]int64 `json:"items_updated"`
+	ItemsFailed    map[ObjectType]int64 `json:"items_failed"`
+	ItemsSkipped   map[ObjectType]int64 `json:"items_skipped"`
 
 	// Totals
 	TotalItems    int64 `json:"total_items"`
@@ -236,13 +234,13 @@ type ImportStats struct {
 
 // ConflictInfo describes a conflict that occurred during import
 type ConflictInfo struct {
-	SourceID     string            `json:"source_id"`
-	TargetID     string            `json:"target_id,omitempty"`
-	ObjectType   engine.ObjectType `json:"object_type"`
-	ConflictType string            `json:"conflict_type"`
-	Description  string            `json:"description"`
-	Resolution   string            `json:"resolution"`
-	Timestamp    time.Time         `json:"timestamp"`
+	SourceID     string     `json:"source_id"`
+	TargetID     string     `json:"target_id,omitempty"`
+	ObjectType   ObjectType `json:"object_type"`
+	ConflictType string     `json:"conflict_type"`
+	Description  string     `json:"description"`
+	Resolution   string     `json:"resolution"`
+	Timestamp    time.Time  `json:"timestamp"`
 }
 
 // Execute performs the import operation
@@ -254,11 +252,11 @@ func (op *ImportOperation) Execute(ctx context.Context, req *ImportRequest) (*Im
 		OperationID: fmt.Sprintf("import-%d", startTime.Unix()),
 		StartTime:   startTime,
 		Stats: ImportStats{
-			ItemsProcessed: make(map[engine.ObjectType]int64),
-			ItemsCreated:   make(map[engine.ObjectType]int64),
-			ItemsUpdated:   make(map[engine.ObjectType]int64),
-			ItemsFailed:    make(map[engine.ObjectType]int64),
-			ItemsSkipped:   make(map[engine.ObjectType]int64),
+			ItemsProcessed: make(map[ObjectType]int64),
+			ItemsCreated:   make(map[ObjectType]int64),
+			ItemsUpdated:   make(map[ObjectType]int64),
+			ItemsFailed:    make(map[ObjectType]int64),
+			ItemsSkipped:   make(map[ObjectType]int64),
 		},
 		ImportedItems: make(map[string]string),
 		Metadata:      make(map[string]interface{}),
@@ -274,20 +272,20 @@ func (op *ImportOperation) Execute(ctx context.Context, req *ImportRequest) (*Im
 	}
 
 	// Create pipeline request with import-specific configuration
-	pipelineReq := &engine.PipelineRequest{
-		Direction:   engine.DirectionImport,
+	pipelineReq := &PipelineRequest{
+		Direction:   DirectionImport,
 		Source:      req.Source,
 		Destination: req.Destination,
-		Transform: engine.TransformConfig{
+		Transform: TransformConfig{
 			Transformers: req.Transforms,
-			Options: engine.TransformOptions{
+			Options: TransformOptions{
 				SkipOnError:      op.config.ContinueOnError,
 				PreserveMetadata: req.Options.PreserveMetadata,
 				StrictMode:       op.config.StrictValidation,
 			},
 		},
 		Validation: req.Validation,
-		Options: engine.PipelineOptions{
+		Options: PipelineOptions{
 			MaxWorkers:       op.config.ConcurrentWorkers,
 			BatchSize:        op.config.BatchSize,
 			BufferSize:       op.config.BatchSize * 2,
@@ -423,7 +421,7 @@ func (op *ImportOperation) validateRequest(req *ImportRequest) error {
 }
 
 // updateStats updates statistics based on pipeline results
-func (op *ImportOperation) updateStats(stats *ImportStats, result engine.PipelineResult) {
+func (op *ImportOperation) updateStats(stats *ImportStats, result PipelineResult) {
 	stats.TotalItems++
 
 	if stats.ItemsProcessed[result.Item.Type] == 0 {
@@ -507,19 +505,19 @@ func NewImportBuilder() *ImportBuilder {
 }
 
 // From sets the data source
-func (b *ImportBuilder) From(source engine.PluginSource) *ImportBuilder {
+func (b *ImportBuilder) From(source PluginSource) *ImportBuilder {
 	b.request.Source = source
 	return b
 }
 
 // To sets the data destination
-func (b *ImportBuilder) To(destination engine.PluginDestination) *ImportBuilder {
+func (b *ImportBuilder) To(destination PluginDestination) *ImportBuilder {
 	b.request.Destination = destination
 	return b
 }
 
 // Include adds object types to the import scope
-func (b *ImportBuilder) Include(objectTypes ...engine.ObjectType) *ImportBuilder {
+func (b *ImportBuilder) Include(objectTypes ...ObjectType) *ImportBuilder {
 	b.request.Scope.ObjectTypes = append(b.request.Scope.ObjectTypes, objectTypes...)
 	return b
 }
@@ -550,7 +548,7 @@ func (b *ImportBuilder) WithConflictResolution(resolution ConflictResolution) *I
 
 // Transform adds a transformation to the pipeline
 func (b *ImportBuilder) Transform(transformerType string, properties map[string]interface{}) *ImportBuilder {
-	transform := engine.TransformerConfig{
+	transform := TransformerConfig{
 		Type:       transformerType,
 		Properties: properties,
 	}
@@ -586,12 +584,12 @@ func (b *ImportBuilder) StrictValidation() *ImportBuilder {
 }
 
 // Build creates the import operation
-func (b *ImportBuilder) Build(engine *engine.ProcessingEngine) *ImportOperation {
+func (b *ImportBuilder) Build(engine *ProcessingEngine) *ImportOperation {
 	return NewImportOperation(engine, b.config)
 }
 
 // Execute builds and executes the import operation
-func (b *ImportBuilder) Execute(ctx context.Context, engine *engine.ProcessingEngine) (*ImportResult, error) {
+func (b *ImportBuilder) Execute(ctx context.Context, engine *ProcessingEngine) (*ImportResult, error) {
 	operation := b.Build(engine)
 	return operation.Execute(ctx, b.request)
 }

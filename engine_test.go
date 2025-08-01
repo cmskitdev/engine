@@ -127,7 +127,7 @@ func TestProcessingEngine_Process_ValidRequest(t *testing.T) {
 
 	// Create mock source and destination
 	source := &MockSource{
-		items: []DataItem{
+		items: []DataItemContainer{
 			*NewDataItem(ObjectTypePage, "page-1", map[string]interface{}{"title": "Test Page"}),
 			*NewDataItem(ObjectTypeBlock, "block-1", map[string]interface{}{"content": "Test Block"}),
 		},
@@ -261,7 +261,7 @@ type MockTransformer struct {
 	name string
 }
 
-func (t *MockTransformer) Transform(ctx context.Context, item DataItem) (DataItem, error) {
+func (t *MockTransformer) Transform(ctx context.Context, item DataItemContainer) (DataItemContainer, error) {
 	// Simple mock transformation - just add a property
 	item.SetProperty("transformed_by", t.name)
 	return item, nil
@@ -279,7 +279,7 @@ type MockValidator struct {
 	name string
 }
 
-func (v *MockValidator) Validate(ctx context.Context, item DataItem) ValidationState {
+func (v *MockValidator) Validate(ctx context.Context, item DataItemContainer) ValidationState {
 	return ValidationState{
 		IsValid:     true,
 		Errors:      []ValidationError{},
@@ -301,12 +301,12 @@ type MockMiddleware struct {
 	name string
 }
 
-func (m *MockMiddleware) PreProcess(ctx context.Context, item *DataItem) error {
+func (m *MockMiddleware) PreProcess(ctx context.Context, item *DataItemContainer) error {
 	item.SetProperty("preprocessed_by", m.name)
 	return nil
 }
 
-func (m *MockMiddleware) PostProcess(ctx context.Context, item *DataItem) error {
+func (m *MockMiddleware) PostProcess(ctx context.Context, item *DataItemContainer) error {
 	item.SetProperty("postprocessed_by", m.name)
 	return nil
 }
@@ -316,11 +316,11 @@ func (m *MockMiddleware) GetName() string {
 }
 
 type MockSource struct {
-	items []DataItem
+	items []DataItemContainer
 }
 
-func (s *MockSource) Read(ctx context.Context, req *ReadRequest) (<-chan DataItem, error) {
-	results := make(chan DataItem, len(s.items))
+func (s *MockSource) Read(ctx context.Context, req *ReadRequest) (<-chan DataItemContainer, error) {
+	results := make(chan DataItemContainer, len(s.items))
 
 	go func() {
 		defer close(results)
@@ -356,18 +356,18 @@ func (s *MockSource) Close() error {
 }
 
 type MockDestination struct {
-	items []DataItem
+	items []DataItemContainer
 	mu    sync.Mutex
 }
 
-func (d *MockDestination) Write(ctx context.Context, item DataItem) error {
+func (d *MockDestination) Write(ctx context.Context, item DataItemContainer) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.items = append(d.items, item)
 	return nil
 }
 
-func (d *MockDestination) Batch(ctx context.Context, items []DataItem) error {
+func (d *MockDestination) Batch(ctx context.Context, items []DataItemContainer) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.items = append(d.items, items...)
@@ -378,7 +378,7 @@ func (d *MockDestination) SupportsType(objType ObjectType) bool {
 	return true
 }
 
-func (d *MockDestination) Validate(item DataItem) error {
+func (d *MockDestination) Validate(item DataItemContainer) error {
 	return nil
 }
 
@@ -393,8 +393,8 @@ func (d *MockDestination) Close() error {
 	return nil
 }
 
-func (d *MockDestination) GetItems() []DataItem {
+func (d *MockDestination) GetItems() []DataItemContainer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]DataItem{}, d.items...)
+	return append([]DataItemContainer{}, d.items...)
 }

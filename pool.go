@@ -1,3 +1,4 @@
+// package engine provides the core engine for processing data items.
 package engine
 
 import (
@@ -42,6 +43,7 @@ func NewWorkerPool(workers, bufferSize int) *WorkerPool {
 //
 // Arguments:
 // - work: A function to be executed by a worker.
+
 func (p *WorkerPool) Submit(work func()) {
 	select {
 	case p.workChan <- work:
