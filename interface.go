@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"time"
+
+	"github.com/cmskitdev/common"
 )
 
 // Pipeline is the main interface for processing data in either direction (export/import)
-type Pipeline interface {
+type Pipeline[T any] interface {
 	// Process data through the pipeline
-	Process(ctx context.Context, req *PipelineRequest) (<-chan PipelineResult, error)
+	Process(ctx context.Context, req *PipelineRequest[T]) (<-chan PipelineResult[T], error)
 
 	// Get pipeline configuration
 	Config() PipelineConfig
@@ -21,21 +23,21 @@ type Pipeline interface {
 type Direction string
 
 const (
-	DirectionExport Direction = "export" // Notion -> External
-	DirectionImport Direction = "import" // External -> Notion
-	DirectionSync   Direction = "sync"   // Bidirectional sync
+	DirectionExport Direction = "export"
+	DirectionImport Direction = "import"
+	DirectionSync   Direction = "sync"
 )
 
 // PipelineRequest defines a complete data processing request
-type PipelineRequest struct {
+type PipelineRequest[T any] struct {
 	// Processing direction
 	Direction Direction `json:"direction"`
 
 	// Data source configuration
-	Source PluginSource `json:"source"`
+	Source PluginSource[T] `json:"source"`
 
 	// Data destination configuration
-	Destination PluginDestination `json:"destination"`
+	Destination PluginDestination[T] `json:"destination"`
 
 	// Transformation configuration
 	Transform TransformConfig `json:"transform"`
@@ -51,9 +53,9 @@ type PipelineRequest struct {
 }
 
 // PipelineResult represents the result of processing a single data item
-type PipelineResult struct {
+type PipelineResult[T any] struct {
 	// The processed data item
-	Item DataItemContainer `json:"item"`
+	Item DataItemContainer[T] `json:"item"`
 
 	// Processing phase where this result was generated
 	Phase ProcessingPhase `json:"phase"`
@@ -128,11 +130,11 @@ type RequestMetadata struct {
 
 // ResultMetadata contains metadata about processing results
 type ResultMetadata struct {
-	ProcessedAt    time.Time              `json:"processed_at"`
-	ProcessingTime time.Duration          `json:"processing_time"`
-	AttemptCount   int                    `json:"attempt_count"`
-	WorkerID       string                 `json:"worker_id,omitempty"`
-	Properties     map[string]interface{} `json:"properties,omitempty"`
+	Time       time.Time              `json:"time"`
+	Duration   time.Duration          `json:"duration"`
+	Attempts   int                    `json:"attempts"`
+	WorkerID   string                 `json:"worker_id,omitempty"`
+	Properties map[string]interface{} `json:"properties,omitempty"`
 }
 
 // ProcessingPhase represents the current phase of data processing
@@ -159,15 +161,15 @@ type PipelineConfig struct {
 }
 
 // PluginSource interface for reading data from various sources
-type PluginSource interface {
+type PluginSource[T any] interface {
 	// Read data items from the source
-	Read(ctx context.Context, req *ReadRequest) (<-chan DataItemContainer, error)
+	Read(ctx context.Context, req *ReadRequest) (<-chan DataItemContainer[T], error)
 
 	// Validate that the read request is valid for this source
 	Validate(req *ReadRequest) error
 
 	// Check if this source supports the given object type
-	SupportsType(objType ObjectType) bool
+	SupportsType(objType common.ObjectType) bool
 
 	// Get source configuration
 	Config() SourceConfig
@@ -177,18 +179,18 @@ type PluginSource interface {
 }
 
 // PluginDestination interface for writing data to various destinations
-type PluginDestination interface {
+type PluginDestination[T any] interface {
 	// Write a single data item to the destination
-	Write(ctx context.Context, item DataItemContainer) error
+	Write(ctx context.Context, item DataItemContainer[T]) error
 
 	// Write multiple data items in a batch (optional optimization)
-	Batch(ctx context.Context, items []DataItemContainer) error
+	Batch(ctx context.Context, items []DataItemContainer[T]) error
 
 	// Check if this destination supports the given object type
-	SupportsType(objType ObjectType) bool
+	SupportsType(objType common.ObjectType) bool
 
 	// Validate that the data item is valid for this destination
-	Validate(item DataItemContainer) error
+	Validate(item DataItemContainer[T]) error
 
 	// Get destination configuration
 	Config() DestinationConfig
@@ -200,7 +202,7 @@ type PluginDestination interface {
 // ReadRequest specifies what data to read from a source
 type ReadRequest struct {
 	// Object types to read
-	Types []ObjectType `json:"types,omitempty"`
+	Types []common.ObjectType `json:"types,omitempty"`
 
 	// Specific object IDs to read
 	IDs []string `json:"ids,omitempty"`

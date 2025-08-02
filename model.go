@@ -2,44 +2,19 @@ package engine
 
 import (
 	"time"
+
+	"github.com/cmskitdev/common"
 )
 
-// ObjectType represents the type of data object
-type ObjectType string
-
-const (
-	ObjectTypeDatabase  ObjectType = "database"
-	ObjectTypePage      ObjectType = "page"
-	ObjectTypeBlock     ObjectType = "block"
-	ObjectTypeComment   ObjectType = "comment"
-	ObjectTypeUser      ObjectType = "user"
-	ObjectTypeFile      ObjectType = "file"
-	ObjectTypeWorkspace ObjectType = "workspace"
-	ObjectTypeProperty  ObjectType = "property"
-	ObjectTypeRelation  ObjectType = "relation"
-	ObjectTypeGeneric   ObjectType = "generic"
-)
-
-// DataItem represents a universal data item that can flow through the pipeline
-type DataItemContainer struct {
-	// Core identification
-	Type ObjectType `json:"type"`
-	ID   string     `json:"id"`
-
-	// The actual data payload
-	Data interface{} `json:"data"`
-
-	// Item metadata
-	Metadata ItemMetadata `json:"metadata"`
-
-	// Relationships to other items
-	Relationships []Relationship `json:"relationships,omitempty"`
-
-	// Dependencies that must be processed before this item
-	Dependencies []string `json:"dependencies,omitempty"`
-
-	// Tags for categorization and filtering
-	Tags []string `json:"tags,omitempty"`
+// DataItemContainer represents a universal data item that can flow through the pipeline.
+type DataItemContainer[T any] struct {
+	Type          common.ObjectType `json:"type"`
+	ID            string            `json:"id"`
+	Data          T                 `json:"data"` // now strongly typed
+	Metadata      ItemMetadata      `json:"metadata"`
+	Relationships []Relationship    `json:"relationships,omitempty"`
+	Dependencies  []string          `json:"dependencies,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
 }
 
 // ItemMetadata contains metadata about a data item
@@ -48,24 +23,19 @@ type ItemMetadata struct {
 	SourceType string `json:"source_type"`
 	SourceID   string `json:"source_id,omitempty"`
 	OriginalID string `json:"original_id,omitempty"`
-
 	// Timestamps
 	CreatedAt   time.Time  `json:"created_at"`
 	ModifiedAt  time.Time  `json:"modified_at"`
 	ProcessedAt *time.Time `json:"processed_at,omitempty"`
-
 	// Processing state
 	ValidationState ValidationState `json:"validation_state"`
 	TransformState  TransformState  `json:"transform_state"`
 	ProcessingState ProcessingState `json:"processing_state"`
-
 	// Additional properties
 	Properties map[string]interface{} `json:"properties,omitempty"`
-
 	// Version information
 	Version  string `json:"version,omitempty"`
 	Checksum string `json:"checksum,omitempty"`
-
 	// Size information
 	SizeBytes int64 `json:"size_bytes,omitempty"`
 	ItemCount int   `json:"item_count,omitempty"` // For containers like pages with blocks
@@ -151,7 +121,7 @@ const (
 type Relationship struct {
 	Type          RelationType           `json:"type"`
 	TargetID      string                 `json:"target_id"`
-	TargetType    ObjectType             `json:"target_type,omitempty"`
+	TargetType    common.ObjectType      `json:"target_type,omitempty"`
 	Context       string                 `json:"context,omitempty"`
 	Properties    map[string]interface{} `json:"properties,omitempty"`
 	Bidirectional bool                   `json:"bidirectional,omitempty"`
@@ -174,13 +144,13 @@ const (
 )
 
 // DataCollection represents a collection of related data items
-type DataCollection struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Items       []DataItemContainer `json:"items"`
-	Metadata    CollectionMetadata  `json:"metadata"`
-	Schema      *CollectionSchema   `json:"schema,omitempty"`
+type DataCollection[T any] struct {
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Items       []DataItemContainer[T] `json:"items"`
+	Metadata    CollectionMetadata     `json:"metadata"`
+	Schema      *CollectionSchema      `json:"schema,omitempty"`
 }
 
 // CollectionMetadata contains metadata about a collection
@@ -196,7 +166,7 @@ type CollectionMetadata struct {
 // CollectionSchema defines the expected structure of items in a collection
 type CollectionSchema struct {
 	Version     string                 `json:"version"`
-	ObjectTypes []ObjectType           `json:"object_types"`
+	ObjectTypes []common.ObjectType    `json:"object_types"`
 	Fields      map[string]FieldSchema `json:"fields"`
 	Required    []string               `json:"required,omitempty"`
 	Properties  map[string]interface{} `json:"properties,omitempty"`
@@ -233,37 +203,37 @@ const (
 // Helper methods for DataItem
 
 // IsValid checks if the item passed validation
-func (item *DataItemContainer) IsValid() bool {
+func (item *DataItemContainer[T]) IsValid() bool {
 	return item.Metadata.ValidationState.IsValid
 }
 
 // HasErrors checks if the item has validation errors
-func (item *DataItemContainer) HasErrors() bool {
+func (item *DataItemContainer[T]) HasErrors() bool {
 	return len(item.Metadata.ValidationState.Errors) > 0
 }
 
 // HasWarnings checks if the item has validation warnings
-func (item *DataItemContainer) HasWarnings() bool {
+func (item *DataItemContainer[T]) HasWarnings() bool {
 	return len(item.Metadata.ValidationState.Warnings) > 0
 }
 
 // IsTransformed checks if the item has been transformed
-func (item *DataItemContainer) IsTransformed() bool {
+func (item *DataItemContainer[T]) IsTransformed() bool {
 	return item.Metadata.TransformState.IsTransformed
 }
 
 // IsProcessed checks if the item processing is complete
-func (item *DataItemContainer) IsProcessed() bool {
+func (item *DataItemContainer[T]) IsProcessed() bool {
 	return item.Metadata.ProcessingState.Status == ProcessingStatusCompleted
 }
 
 // HasDependencies checks if the item has dependencies
-func (item *DataItemContainer) HasDependencies() bool {
+func (item *DataItemContainer[T]) HasDependencies() bool {
 	return len(item.Dependencies) > 0
 }
 
 // AddRelationship adds a relationship to the item
-func (item *DataItemContainer) AddRelationship(relType RelationType, targetID string, targetType ObjectType) {
+func (item *DataItemContainer[T]) AddRelationship(relType RelationType, targetID string, targetType common.ObjectType) {
 	if item.Relationships == nil {
 		item.Relationships = make([]Relationship, 0)
 	}
@@ -276,7 +246,7 @@ func (item *DataItemContainer) AddRelationship(relType RelationType, targetID st
 }
 
 // AddDependency adds a dependency to the item
-func (item *DataItemContainer) AddDependency(dependencyID string) {
+func (item *DataItemContainer[T]) AddDependency(dependencyID string) {
 	if item.Dependencies == nil {
 		item.Dependencies = make([]string, 0)
 	}
@@ -292,7 +262,7 @@ func (item *DataItemContainer) AddDependency(dependencyID string) {
 }
 
 // SetProperty sets a metadata property
-func (item *DataItemContainer) SetProperty(key string, value interface{}) {
+func (item *DataItemContainer[T]) SetProperty(key string, value interface{}) {
 	if item.Metadata.Properties == nil {
 		item.Metadata.Properties = make(map[string]interface{})
 	}
@@ -300,7 +270,7 @@ func (item *DataItemContainer) SetProperty(key string, value interface{}) {
 }
 
 // GetProperty gets a metadata property
-func (item *DataItemContainer) GetProperty(key string) (interface{}, bool) {
+func (item *DataItemContainer[T]) GetProperty(key string) (interface{}, bool) {
 	if item.Metadata.Properties == nil {
 		return nil, false
 	}
@@ -309,7 +279,7 @@ func (item *DataItemContainer) GetProperty(key string) (interface{}, bool) {
 }
 
 // AddTag adds a tag to the item
-func (item *DataItemContainer) AddTag(tag string) {
+func (item *DataItemContainer[T]) AddTag(tag string) {
 	if item.Tags == nil {
 		item.Tags = make([]string, 0)
 	}
@@ -325,7 +295,7 @@ func (item *DataItemContainer) AddTag(tag string) {
 }
 
 // HasTag checks if the item has a specific tag
-func (item *DataItemContainer) HasTag(tag string) bool {
+func (item *DataItemContainer[T]) HasTag(tag string) bool {
 	for _, t := range item.Tags {
 		if t == tag {
 			return true
@@ -335,10 +305,10 @@ func (item *DataItemContainer) HasTag(tag string) bool {
 }
 
 // NewDataItem creates a new data item with basic metadata
-func NewDataItem(objType ObjectType, id string, data interface{}) *DataItemContainer {
+func NewDataItem[T any](objType common.ObjectType, id string, data T) *DataItemContainer[T] {
 	now := time.Now()
 
-	return &DataItemContainer{
+	return &DataItemContainer[T]{
 		Type: objType,
 		ID:   id,
 		Data: data,

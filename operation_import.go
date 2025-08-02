@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/cmskitdev/common"
 )
 
 // ImportOperation handles data import from sources to destinations
 type ImportOperation struct {
-	engine *ProcessingEngine
+	engine *Engine[any]
 	config ImportConfig
 }
 
@@ -81,7 +83,7 @@ func DefaultImportConfig() ImportConfig {
 }
 
 // NewImportOperation creates a new import operation
-func NewImportOperation(engine *ProcessingEngine, config ImportConfig) *ImportOperation {
+func NewImportOperation(engine *Engine[any], config ImportConfig) *ImportOperation {
 	return &ImportOperation{
 		engine: engine,
 		config: config,
@@ -91,10 +93,10 @@ func NewImportOperation(engine *ProcessingEngine, config ImportConfig) *ImportOp
 // ImportRequest defines what and how to import
 type ImportRequest struct {
 	// Source configuration
-	Source PluginSource `json:"source"`
+	Source PluginSource[any] `json:"source"`
 
 	// Destination configuration
-	Destination PluginDestination `json:"destination"`
+	Destination PluginDestination[any] `json:"destination"`
 
 	// What to import
 	Scope ImportScope `json:"scope"`
@@ -112,7 +114,7 @@ type ImportRequest struct {
 // ImportScope defines what data to import
 type ImportScope struct {
 	// Object types to include
-	ObjectTypes []ObjectType `json:"object_types,omitempty"`
+	ObjectTypes []common.ObjectType `json:"object_types,omitempty"`
 
 	// Specific object IDs to import
 	ObjectIDs []string `json:"object_ids,omitempty"`
@@ -121,7 +123,7 @@ type ImportScope struct {
 	Filters []Filter `json:"filters,omitempty"`
 
 	// Import order preferences
-	ImportOrder []ObjectType `json:"import_order,omitempty"` // Preferred import order
+	ImportOrder []common.ObjectType `json:"import_order,omitempty"` // Preferred import order
 
 	// Dependency handling
 	ResolveDependencies bool `json:"resolve_dependencies"`
@@ -198,11 +200,11 @@ type ImportResult struct {
 // ImportStats contains detailed statistics about the import operation
 type ImportStats struct {
 	// Item counts by type
-	ItemsProcessed map[ObjectType]int64 `json:"items_processed"`
-	ItemsCreated   map[ObjectType]int64 `json:"items_created"`
-	ItemsUpdated   map[ObjectType]int64 `json:"items_updated"`
-	ItemsFailed    map[ObjectType]int64 `json:"items_failed"`
-	ItemsSkipped   map[ObjectType]int64 `json:"items_skipped"`
+	ItemsProcessed map[common.ObjectType]int64 `json:"items_processed"`
+	ItemsCreated   map[common.ObjectType]int64 `json:"items_created"`
+	ItemsUpdated   map[common.ObjectType]int64 `json:"items_updated"`
+	ItemsFailed    map[common.ObjectType]int64 `json:"items_failed"`
+	ItemsSkipped   map[common.ObjectType]int64 `json:"items_skipped"`
 
 	// Totals
 	TotalItems    int64 `json:"total_items"`
@@ -234,13 +236,13 @@ type ImportStats struct {
 
 // ConflictInfo describes a conflict that occurred during import
 type ConflictInfo struct {
-	SourceID     string     `json:"source_id"`
-	TargetID     string     `json:"target_id,omitempty"`
-	ObjectType   ObjectType `json:"object_type"`
-	ConflictType string     `json:"conflict_type"`
-	Description  string     `json:"description"`
-	Resolution   string     `json:"resolution"`
-	Timestamp    time.Time  `json:"timestamp"`
+	SourceID     string            `json:"source_id"`
+	TargetID     string            `json:"target_id,omitempty"`
+	ObjectType   common.ObjectType `json:"object_type"`
+	ConflictType string            `json:"conflict_type"`
+	Description  string            `json:"description"`
+	Resolution   string            `json:"resolution"`
+	Timestamp    time.Time         `json:"timestamp"`
 }
 
 // Execute performs the import operation
@@ -252,11 +254,11 @@ func (op *ImportOperation) Execute(ctx context.Context, req *ImportRequest) (*Im
 		OperationID: fmt.Sprintf("import-%d", startTime.Unix()),
 		StartTime:   startTime,
 		Stats: ImportStats{
-			ItemsProcessed: make(map[ObjectType]int64),
-			ItemsCreated:   make(map[ObjectType]int64),
-			ItemsUpdated:   make(map[ObjectType]int64),
-			ItemsFailed:    make(map[ObjectType]int64),
-			ItemsSkipped:   make(map[ObjectType]int64),
+			ItemsProcessed: make(map[common.ObjectType]int64),
+			ItemsCreated:   make(map[common.ObjectType]int64),
+			ItemsUpdated:   make(map[common.ObjectType]int64),
+			ItemsFailed:    make(map[common.ObjectType]int64),
+			ItemsSkipped:   make(map[common.ObjectType]int64),
 		},
 		ImportedItems: make(map[string]string),
 		Metadata:      make(map[string]interface{}),
@@ -272,7 +274,7 @@ func (op *ImportOperation) Execute(ctx context.Context, req *ImportRequest) (*Im
 	}
 
 	// Create pipeline request with import-specific configuration
-	pipelineReq := &PipelineRequest{
+	pipelineReq := &PipelineRequest[any]{
 		Direction:   DirectionImport,
 		Source:      req.Source,
 		Destination: req.Destination,
@@ -300,7 +302,7 @@ func (op *ImportOperation) Execute(ctx context.Context, req *ImportRequest) (*Im
 	}
 
 	// Process the pipeline
-	results, err := op.engine.Process(ctx, pipelineReq)
+	results, err := op.engine.Start(ctx, pipelineReq)
 	if err != nil {
 		result.Success = false
 		result.Errors = []string{fmt.Sprintf("pipeline failed: %v", err)}
@@ -421,7 +423,7 @@ func (op *ImportOperation) validateRequest(req *ImportRequest) error {
 }
 
 // updateStats updates statistics based on pipeline results
-func (op *ImportOperation) updateStats(stats *ImportStats, result PipelineResult) {
+func (op *ImportOperation) updateStats(stats *ImportStats, result PipelineResult[any]) {
 	stats.TotalItems++
 
 	if stats.ItemsProcessed[result.Item.Type] == 0 {
@@ -505,19 +507,19 @@ func NewImportBuilder() *ImportBuilder {
 }
 
 // From sets the data source
-func (b *ImportBuilder) From(source PluginSource) *ImportBuilder {
+func (b *ImportBuilder) From(source PluginSource[any]) *ImportBuilder {
 	b.request.Source = source
 	return b
 }
 
 // To sets the data destination
-func (b *ImportBuilder) To(destination PluginDestination) *ImportBuilder {
+func (b *ImportBuilder) To(destination PluginDestination[any]) *ImportBuilder {
 	b.request.Destination = destination
 	return b
 }
 
 // Include adds object types to the import scope
-func (b *ImportBuilder) Include(objectTypes ...ObjectType) *ImportBuilder {
+func (b *ImportBuilder) Include(objectTypes ...common.ObjectType) *ImportBuilder {
 	b.request.Scope.ObjectTypes = append(b.request.Scope.ObjectTypes, objectTypes...)
 	return b
 }
@@ -584,12 +586,12 @@ func (b *ImportBuilder) StrictValidation() *ImportBuilder {
 }
 
 // Build creates the import operation
-func (b *ImportBuilder) Build(engine *ProcessingEngine) *ImportOperation {
+func (b *ImportBuilder) Build(engine *Engine[any]) *ImportOperation {
 	return NewImportOperation(engine, b.config)
 }
 
 // Execute builds and executes the import operation
-func (b *ImportBuilder) Execute(ctx context.Context, engine *ProcessingEngine) (*ImportResult, error) {
+func (b *ImportBuilder) Execute(ctx context.Context, engine *Engine[any]) (*ImportResult, error) {
 	operation := b.Build(engine)
 	return operation.Execute(ctx, b.request)
 }

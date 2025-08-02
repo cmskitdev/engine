@@ -1,3 +1,4 @@
+// Package engine package contains the core engine that orchestrates data processing.
 package engine
 
 import (
@@ -5,222 +6,206 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/cmskitdev/common"
+	"github.com/cmskitdev/plugins"
+	"github.com/cmskitdev/redis"
 )
 
-// ProcessingEngine is the core engine that orchestrates data processing
-type ProcessingEngine struct {
-	config       EngineConfig
-	transformers map[string]Transformer
-	validators   map[string]Validator
-	middleware   []Middleware
-	metrics      *EngineMetrics
-	mu           sync.RWMutex
+// Engine is the core engine that orchestrates data processing.
+type Engine[T any] struct {
+	config         Config
+	configManager  *ConfigManager
+	transformers   map[string]Transformer[T]
+	validators     map[string]Validator[T]
+	middleware     []Middleware[T]
+	plugins        map[string]*plugins.Plugin[any]
+	metrics        *Metrics
+	mu             sync.RWMutex
+	bus            *plugins.EventBus[any]
+	pluginRegistry *plugins.Registry[any]
 }
 
-// EngineConfig configures the processing engine
-type EngineConfig struct {
-	Name               string        `json:"name"`
-	MaxConcurrentItems int           `json:"max_concurrent_items"`
-	DefaultTimeout     time.Duration `json:"default_timeout"`
-	EnableMetrics      bool          `json:"enable_metrics"`
-	EnableTracing      bool          `json:"enable_tracing"`
-	MemoryLimitMB      int           `json:"memory_limit_mb"`
+type NewEngineOptions struct {
+	Plugins []string
 }
 
-// DefaultEngineConfig returns sensible defaults for the engine
-func DefaultEngineConfig() EngineConfig {
-	return EngineConfig{
-		Name:               "default-engine",
-		MaxConcurrentItems: 10,
-		DefaultTimeout:     30 * time.Minute,
-		EnableMetrics:      true,
-		EnableTracing:      false,
-		MemoryLimitMB:      512,
-	}
-}
+// NewEngine creates a new processing engine.
+func NewEngine[T any](opts NewEngineOptions) *Engine[T] {
+	config := DefaultConfig()
 
-// EngineMetrics tracks processing metrics
-type EngineMetrics struct {
-	ItemsProcessed        int64         `json:"items_processed"`
-	ItemsSuccessful       int64         `json:"items_successful"`
-	ItemsFailed           int64         `json:"items_failed"`
-	TotalProcessingTime   time.Duration `json:"total_processing_time"`
-	AverageProcessingTime time.Duration `json:"average_processing_time"`
-	StartedAt             time.Time     `json:"started_at"`
-	LastProcessedAt       *time.Time    `json:"last_processed_at,omitempty"`
-	mu                    sync.RWMutex
-}
+	bus := plugins.NewEventBus[any]()
+	reg := plugins.NewRegistry(bus)
 
-// NewProcessingEngine creates a new processing engine
-func NewProcessingEngine(config EngineConfig) *ProcessingEngine {
-	if config.Name == "" {
-		config = DefaultEngineConfig()
+	engine := &Engine[T]{
+		config:         config,
+		transformers:   make(map[string]Transformer[T]),
+		validators:     make(map[string]Validator[T]),
+		middleware:     make([]Middleware[T], 0),
+		plugins:        make(map[string]*plugins.Plugin[any]),
+		metrics:        &Metrics{StartedAt: time.Now()},
+		bus:            bus,
+		pluginRegistry: reg,
 	}
 
-	engine := &ProcessingEngine{
-		config:       config,
-		transformers: make(map[string]Transformer),
-		validators:   make(map[string]Validator),
-		middleware:   make([]Middleware, 0),
-		metrics:      &EngineMetrics{StartedAt: time.Now()},
-	}
+	engine.configManager = NewConfigManager()
+
+	engine.registerAll()
+
+	bus.Publish(plugins.Message{
+		Event: plugins.EventMessage,
+		Data: redis.DataItem{
+			ID:   "test",
+			Data: "test",
+		},
+	})
 
 	return engine
 }
 
-// RegisterTransformer registers a transformer with the engine
-func (e *ProcessingEngine) RegisterTransformer(name string, transformer Transformer) {
+// RegisterTransformer registers a transformer with the engine.
+func (e *Engine[T]) RegisterTransformer(name string, transformer Transformer[T]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.transformers[name] = transformer
 }
 
-// RegisterValidator registers a validator with the engine
-func (e *ProcessingEngine) RegisterValidator(name string, validator Validator) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.validators[name] = validator
-}
-
-// AddMiddleware adds middleware to the processing pipeline
-func (e *ProcessingEngine) AddMiddleware(middleware Middleware) {
+// AddMiddleware adds middleware to the processing pipeline.
+func (e *Engine[T]) AddMiddleware(middleware Middleware[T]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.middleware = append(e.middleware, middleware)
 }
 
-// Process orchestrates the complete processing of data items
-func (e *ProcessingEngine) Process(ctx context.Context, req *PipelineRequest) (<-chan PipelineResult, error) {
-	if err := e.validateRequest(req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	results := make(chan PipelineResult, req.Options.BufferSize)
+// Start begins the pipeline for the requested `PipelineRequest` configuration.
+//
+// Arguments:
+// - ctx: The context for the processing.
+// - req: The pipeline request.
+//
+// Returns:
+// - results: The channel to send the results to.
+// - err: The error if the request is invalid.
+func (e *Engine[T]) Start(ctx context.Context, req *PipelineRequest[T]) (<-chan PipelineResult[T], error) {
+	processingContext := NewProcessingContext(ProcessingContextOptions[T]{
+		Context:    ctx,
+		Request:    req,
+		Metrics:    e.config.EnableMetrics,
+		BufferSize: req.Options.BufferSize,
+	})
 
 	go func() {
-		defer close(results)
-		e.processItems(ctx, req, results)
+		defer close(processingContext.Results)
+		e.work(processingContext)
 	}()
 
-	return results, nil
+	return processingContext.Results, nil
 }
 
-// processItems handles the actual processing workflow hanlded by the `Process` function.
+// work handles the actual processing workflow hanlded by the `Process` function.
 //
 // Arguments:
 // - ctx: The context for the processing.
 // - req: The pipeline request.
 // - results: The channel to send the results to.
-func (e *ProcessingEngine) processItems(ctx context.Context, req *PipelineRequest, results chan<- PipelineResult) {
-	// Phase 1: Read data from source
-	// Determine which object types to read based on configuration available in the
-	// source (a DataSource object).
-	types := e.determineReadTypes(req.Source)
+func (e *Engine[T]) work(pc *ProcessingContext[T]) {
+	readReq := &ReadRequest{
+		Types: e.determineReadTypes(pc.Request.Source),
+		Options: map[string]interface{}{
+			"buffer_size": pc.Request.Options.BufferSize,
+			"max_workers": pc.Request.Options.MaxWorkers,
+		},
+	}
 
-	items, err := req.Source.Read(ctx, &ReadRequest{
-		Types:   types,
-		Filters: []Filter{}, // Will be populated based on request
-		Options: make(map[string]interface{}),
-	})
+	items, err := pc.Request.Source.Read(pc.Context, readReq)
 	if err != nil {
-		results <- PipelineResult{
-			Phase:   PhaseRead,
-			Success: false,
-			Error:   fmt.Errorf("failed to read from source: %w", err),
-		}
+		pc.Results <- PipelineResult[T]{Phase: PhaseRead, Success: false, Error: err}
 		return
 	}
 
-	// Create the worker pool for concurrently processing items.
-	workerPool := NewWorkerPool(req.Options.MaxWorkers, req.Options.BufferSize)
-	defer workerPool.Close()
+	pool := NewWorkerPool(pc.Request.Options.MaxWorkers, pc.Request.Options.BufferSize)
+	defer pool.Close()
 
-	// Process items through the pipeline by submitting them to the local worker pool.
 	var wg sync.WaitGroup
 	for item := range items {
 		select {
-		// The only time this should happen is if the context is cancelled which is likely
-		// due to a timeout or a user cancelling the operation upstream. If this happens,
-		// we send a result indicating an error to the results channel.
-		case <-ctx.Done():
-			results <- PipelineResult{
-				Phase:   PhaseError,
-				Success: false,
-				Error:   ctx.Err(),
-			}
+		case <-pc.Context.Done():
+			pc.Results <- PipelineResult[T]{Phase: PhaseError, Success: false, Error: pc.Context.Err()}
 			return
 		default:
-			// Submit the item to the local worker pool for processing.
 			wg.Add(1)
-			workerPool.Submit(func() {
+			pool.Submit(func() {
 				defer wg.Done()
-				e.processItem(ctx, item, req, results)
+				e.transition(pc, item)
 			})
 		}
 	}
-
-	// Block this motherfucker until all items are processed by the current local worker pool.
 	wg.Wait()
 }
 
-// processItem processes a single data item through all phases
-func (e *ProcessingEngine) processItem(ctx context.Context, item DataItemContainer, req *PipelineRequest, results chan<- PipelineResult) {
+// transition takes an item and transitions it through all phases in the pipeline
+// operating within a single worker goroutine.
+//
+// Arguments:
+// - processingContext: The processing context.
+// - item: The item that gets transitioned.
+func (e *Engine[T]) transition(processingContext *ProcessingContext[T], item DataItemContainer[T]) {
 	startTime := time.Now()
 	item.Metadata.ProcessingState.StartedAt = startTime
 	item.Metadata.ProcessingState.Status = ProcessingStatusInProgress
 
 	// Apply middleware (pre-processing)
 	for _, middleware := range e.middleware {
-		if err := middleware.PreProcess(ctx, &item); err != nil {
-			e.sendResult(results, item, PhaseError, false, err, startTime)
+		if err := middleware.PreProcess(processingContext.Context, &item); err != nil {
+			e.sendResult(processingContext.Results, item, PhaseError, false, err, startTime)
 			return
 		}
 	}
 
 	// Phase 2: Transform
-	if len(req.Transform.Transformers) > 0 {
+	if len(processingContext.Request.Transform.Transformers) > 0 {
 		item.Metadata.ProcessingState.Phase = PhaseTransform
-		transformedItem, err := e.applyTransformations(ctx, item, req.Transform)
+		transformedItem, err := e.applyTransformations(processingContext.Context, item, processingContext.Request.Transform)
 		if err != nil {
-			e.sendResult(results, item, PhaseTransform, false, err, startTime)
+			e.sendResult(processingContext.Results, item, PhaseTransform, false, err, startTime)
 			return
 		}
 		item = transformedItem
-		e.sendResult(results, item, PhaseTransform, true, nil, startTime)
+		e.sendResult(processingContext.Results, item, PhaseTransform, true, nil, startTime)
 	}
 
 	// Phase 3: Validate
-	if !req.Options.SkipValidation && len(req.Validation.Validators) > 0 {
+	if !processingContext.Request.Options.SkipValidation && len(processingContext.Request.Validation.Validators) > 0 {
 		item.Metadata.ProcessingState.Phase = PhaseValidate
-		validationResult, err := e.applyValidations(ctx, item, req.Validation)
+		validationResult, err := e.applyValidations(processingContext.Context, item, processingContext.Request.Validation)
 		if err != nil {
-			e.sendResult(results, item, PhaseValidate, false, err, startTime)
+			e.sendResult(processingContext.Results, item, PhaseValidate, false, err, startTime)
 			return
 		}
 		item.Metadata.ValidationState = validationResult
-		e.sendResult(results, item, PhaseValidate, true, nil, startTime)
+		e.sendResult(processingContext.Results, item, PhaseValidate, true, nil, startTime)
 
 		// Stop if validation failed and we're in strict mode
-		if !validationResult.IsValid && req.Validation.Options.StopOnFirstError {
-			e.sendResult(results, item, PhaseError, false, fmt.Errorf("validation failed"), startTime)
+		if !validationResult.IsValid && processingContext.Request.Validation.Options.StopOnFirstError {
+			e.sendResult(processingContext.Results, item, PhaseError, false, fmt.Errorf("validation failed"), startTime)
 			return
 		}
 	}
 
 	// Phase 4: Write to destination
-	if !req.Options.DryRun {
+	if !processingContext.Request.Options.DryRun {
 		item.Metadata.ProcessingState.Phase = PhaseWrite
-		if err := req.Destination.Write(ctx, item); err != nil {
-			e.sendResult(results, item, PhaseWrite, false, err, startTime)
+		if err := processingContext.Request.Destination.Write(processingContext.Context, item); err != nil {
+			e.sendResult(processingContext.Results, item, PhaseWrite, false, err, startTime)
 			return
 		}
-		e.sendResult(results, item, PhaseWrite, true, nil, startTime)
+		e.sendResult(processingContext.Results, item, PhaseWrite, true, nil, startTime)
 	}
 
 	// Apply middleware (post-processing)
 	for _, middleware := range e.middleware {
-		if err := middleware.PostProcess(ctx, &item); err != nil {
-			e.sendResult(results, item, PhaseError, false, err, startTime)
+		if err := middleware.PostProcess(processingContext.Context, &item); err != nil {
+			e.sendResult(processingContext.Results, item, PhaseError, false, err, startTime)
 			return
 		}
 	}
@@ -231,26 +216,26 @@ func (e *ProcessingEngine) processItem(ctx context.Context, item DataItemContain
 	completedAt := time.Now()
 	item.Metadata.ProcessingState.CompletedAt = &completedAt
 
-	e.sendResult(results, item, PhaseComplete, true, nil, startTime)
-	e.updateMetrics(true, time.Since(startTime))
+	e.sendResult(processingContext.Results, item, PhaseComplete, true, nil, startTime)
+	e.metric(true, time.Since(startTime))
 }
 
-// sendResult sends a processing result
-func (e *ProcessingEngine) sendResult(results chan<- PipelineResult, item DataItemContainer, phase ProcessingPhase, success bool, err error, startTime time.Time) {
-	results <- PipelineResult{
+// sendResult sends a processing result.
+func (e *Engine[T]) sendResult(results chan<- PipelineResult[T], item DataItemContainer[T], phase ProcessingPhase, success bool, err error, startTime time.Time) {
+	results <- PipelineResult[T]{
 		Item:    item,
 		Phase:   phase,
 		Success: success,
 		Error:   err,
 		Metadata: ResultMetadata{
-			ProcessedAt:    time.Now(),
-			ProcessingTime: time.Since(startTime),
+			Time:     time.Now(),
+			Duration: time.Since(startTime),
 		},
 	}
 }
 
-// applyTransformations applies all configured transformations to an item
-func (e *ProcessingEngine) applyTransformations(ctx context.Context, item DataItemContainer, config TransformConfig) (DataItemContainer, error) {
+// applyTransformations applies all configured transformations to an item.
+func (e *Engine[T]) applyTransformations(ctx context.Context, item DataItemContainer[T], config TransformConfig) (DataItemContainer[T], error) {
 	transformedItem := item
 	transformLog := make([]TransformStep, 0, len(config.Transformers))
 
@@ -308,8 +293,8 @@ func (e *ProcessingEngine) applyTransformations(ctx context.Context, item DataIt
 	return transformedItem, nil
 }
 
-// applyValidations applies all configured validations to an item
-func (e *ProcessingEngine) applyValidations(ctx context.Context, item DataItemContainer, config ValidationConfig) (ValidationState, error) {
+// applyValidations applies all configured validations to an item.
+func (e *Engine[T]) applyValidations(ctx context.Context, item DataItemContainer[T], config ValidationConfig) (ValidationState, error) {
 	state := ValidationState{
 		IsValid:     true,
 		Errors:      make([]ValidationError, 0),
@@ -353,30 +338,8 @@ func (e *ProcessingEngine) applyValidations(ctx context.Context, item DataItemCo
 	return state, nil
 }
 
-// validateRequest validates the pipeline request
-func (e *ProcessingEngine) validateRequest(req *PipelineRequest) error {
-	if req == nil {
-		return fmt.Errorf("request cannot be nil")
-	}
-
-	if req.Source == nil {
-		return fmt.Errorf("source cannot be nil")
-	}
-
-	if req.Destination == nil {
-		return fmt.Errorf("destination cannot be nil")
-	}
-
-	// Validate source
-	if err := req.Source.Validate(&ReadRequest{}); err != nil {
-		return fmt.Errorf("source validation failed: %w", err)
-	}
-
-	return nil
-}
-
-// updateMetrics updates processing metrics
-func (e *ProcessingEngine) updateMetrics(success bool, duration time.Duration) {
+// metric updates processing metrics.
+func (e *Engine[T]) metric(success bool, duration time.Duration) {
 	if !e.config.EnableMetrics {
 		return
 	}
@@ -399,12 +362,12 @@ func (e *ProcessingEngine) updateMetrics(success bool, duration time.Duration) {
 }
 
 // GetMetrics returns current processing metrics (copy without mutex)
-func (e *ProcessingEngine) GetMetrics() EngineMetrics {
+func (e *Engine[T]) GetMetrics() Metrics {
 	e.metrics.mu.RLock()
 	defer e.metrics.mu.RUnlock()
 
-	// Return a copy without the mutex to avoid lock copying
-	return EngineMetrics{
+	// Return a copy without the mutex to avoid lock copying.
+	return Metrics{
 		ItemsProcessed:        e.metrics.ItemsProcessed,
 		ItemsSuccessful:       e.metrics.ItemsSuccessful,
 		ItemsFailed:           e.metrics.ItemsFailed,
@@ -415,40 +378,34 @@ func (e *ProcessingEngine) GetMetrics() EngineMetrics {
 	}
 }
 
-// determineReadTypes determines which object types to read based on source configuration
-func (e *ProcessingEngine) determineReadTypes(source PluginSource) []ObjectType {
+// determineReadTypes determines which object types to read based on source configuration.
+func (e *Engine[T]) determineReadTypes(source PluginSource[T]) []common.ObjectType {
 	sourceConfig := source.Config()
-	var readTypes []ObjectType
+	var readTypes []common.ObjectType
 
-	// Check if source is Notion source by examining its configuration
+	// Check if source is Notion source by examining its configuration.
 	if sourceConfig.Type == "notion" {
-		// Add object types based on what's enabled in the source configuration
+		// Add object types based on what's enabled in the source configuration.
 		if props := sourceConfig.Properties; props != nil {
 			if includeDatabases, ok := props["include_databases"].(bool); ok && includeDatabases {
-				readTypes = append(readTypes, ObjectTypeDatabase)
+				readTypes = append(readTypes, common.ObjectTypeCollection)
 			}
 			if includePages, ok := props["include_pages"].(bool); ok && includePages {
-				readTypes = append(readTypes, ObjectTypePage)
+				readTypes = append(readTypes, common.ObjectTypePage)
 			}
 			if includeBlocks, ok := props["include_blocks"].(bool); ok && includeBlocks {
-				readTypes = append(readTypes, ObjectTypeBlock)
+				readTypes = append(readTypes, common.ObjectTypeBlock)
 			}
 			if includeComments, ok := props["include_comments"].(bool); ok && includeComments {
-				readTypes = append(readTypes, ObjectTypeComment)
+				readTypes = append(readTypes, common.ObjectTypeComment)
 			}
 			if includeUsers, ok := props["include_users"].(bool); ok && includeUsers {
-				readTypes = append(readTypes, ObjectTypeUser)
+				readTypes = append(readTypes, common.ObjectTypeUser)
 			}
 		}
 	} else {
 		// For other source types, include all supported types
-		allTypes := []ObjectType{
-			ObjectTypeDatabase, ObjectTypePage, ObjectTypeBlock,
-			ObjectTypeComment, ObjectTypeUser, ObjectTypeFile,
-			ObjectTypeWorkspace, ObjectTypeProperty, ObjectTypeRelation,
-		}
-
-		for _, objType := range allTypes {
+		for _, objType := range common.ObjectTypes {
 			if source.SupportsType(objType) {
 				readTypes = append(readTypes, objType)
 			}
@@ -457,35 +414,35 @@ func (e *ProcessingEngine) determineReadTypes(source PluginSource) []ObjectType 
 
 	// If no types were determined, include at least the basic types
 	if len(readTypes) == 0 {
-		readTypes = []ObjectType{ObjectTypePage, ObjectTypeDatabase}
+		readTypes = []common.ObjectType{common.ObjectTypePage, common.ObjectTypeCollection}
 	}
 
 	return readTypes
 }
 
 // Close cleanly shuts down the engine
-func (e *ProcessingEngine) Close() error {
+func (e *Engine[T]) Close() error {
 	// Close any resources
 	return nil
 }
 
 // Transformer interface for data transformations
-type Transformer interface {
-	Transform(ctx context.Context, item DataItemContainer) (DataItemContainer, error)
+type Transformer[T any] interface {
+	Transform(ctx context.Context, item DataItemContainer[T]) (DataItemContainer[T], error)
 	GetName() string
 	GetDescription() string
 }
 
 // Validator interface for data validation
-type Validator interface {
-	Validate(ctx context.Context, item DataItemContainer) ValidationState
+type Validator[T any] interface {
+	Validate(ctx context.Context, item DataItemContainer[T]) ValidationState
 	GetName() string
 	GetDescription() string
 }
 
 // Middleware interface for pre/post processing
-type Middleware interface {
-	PreProcess(ctx context.Context, item *DataItemContainer) error
-	PostProcess(ctx context.Context, item *DataItemContainer) error
+type Middleware[T any] interface {
+	PreProcess(ctx context.Context, item *DataItemContainer[T]) error
+	PostProcess(ctx context.Context, item *DataItemContainer[T]) error
 	GetName() string
 }

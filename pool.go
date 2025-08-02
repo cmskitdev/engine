@@ -2,7 +2,6 @@
 package engine
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/mateothegreat/go-multilog/multilog"
@@ -16,7 +15,14 @@ type WorkerPool struct {
 	wg        sync.WaitGroup
 }
 
-// NewWorkerPool creates a new worker pool
+// NewWorkerPool creates a new worker pool.
+//
+// Arguments:
+// - workers: The number of workers to create.
+// - bufferSize: The size of the buffer for the work channel.
+//
+// Returns:
+// - A pointer to the new worker pool.
 func NewWorkerPool(workers, bufferSize int) *WorkerPool {
 	multilog.Debug("engine.pool.NewWorkerPool", "Creating worker pool", map[string]interface{}{
 		"workers":    workers,
@@ -32,7 +38,12 @@ func NewWorkerPool(workers, bufferSize int) *WorkerPool {
 	// Start workers
 	for i := 0; i < workers; i++ {
 		pool.wg.Add(1)
-		go pool.worker(i)
+
+		workerContext := &WorkerContext[any]{
+			ID: i,
+		}
+
+		go pool.worker(workerContext)
 	}
 
 	return pool
@@ -42,8 +53,7 @@ func NewWorkerPool(workers, bufferSize int) *WorkerPool {
 // This is usually called by the engine's processItems() function.
 //
 // Arguments:
-// - work: A function to be executed by a worker.
-
+// - work: Function to be executed by a worker.
 func (p *WorkerPool) Submit(work func()) {
 	select {
 	case p.workChan <- work:
@@ -55,14 +65,13 @@ func (p *WorkerPool) Submit(work func()) {
 //
 // Arguments:
 // - id: The ID of the worker.
-func (p *WorkerPool) worker(id int) {
+func (p *WorkerPool) worker(workerContext *WorkerContext[any]) {
 	defer p.wg.Done()
-
 	for {
 		select {
 		case work := <-p.workChan:
-			multilog.Debug("engine.pool.worker", fmt.Sprintf("[%d] worker received work", id), map[string]interface{}{
-				"work": work,
+			multilog.Trace("engine.pool.worker", "doing work()", map[string]interface{}{
+				"worker": workerContext.ID,
 			})
 			work()
 		case <-p.closeChan:
@@ -74,5 +83,8 @@ func (p *WorkerPool) worker(id int) {
 // Close shuts down the worker pool
 func (p *WorkerPool) Close() {
 	close(p.closeChan)
+	multilog.Debug("engine.pool.Close", "Shutting down worker pool", map[string]interface{}{
+		"workers": p.workers,
+	})
 	p.wg.Wait()
 }
